@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+$LOAD_PATH.unshift File.expand_path('../../lib', __FILE__)
+
+require 'bundler/setup'
+require 'csv'
+require 'fog'
+require 'ostruct'
+
+require 'memstore'
+
+options = OpenStruct.new(api_key: nil, auth_url: nil, tenant: nil, username: nil, password: nil)
+
+option_parser = OptionParser.new do |opts|
+  opts.banner = 'Usage: data-storage-setup [options]'
+
+  opts.on('-kAPI_KEY', '--api-key=API_KEY', 'The OpenStack API key') do |api_key|
+    options.api_key = api_key
+  end
+
+  opts.on('-aAUTH_URL', '--auth-url=AUTH_URL', 'The OpenStack auth URL') do |auth_url|
+    options.auth_url = auth_url
+  end
+
+  opts.on('-tTENANT', '--tenant=TENANT', 'The OpenStack tenant name') do |tenant|
+    options.tenant = tenant
+  end
+
+  opts.on('-uUSERNAME', '--username=USERNAME', 'The OpenStack username') do |username|
+    options.username = username
+  end
+
+  opts.on('-pPASSWORD', '--password=PASSWORD', 'The OpenStack password') do |password|
+    options.password = password
+  end
+end.parse!
+
+containers = {}
+read_acl = []
+
+memstore = Memstore.new(api_key: options.api_key, tenant: options.tenant)
+
+CSV.parse(ARGF.read, headers: true, header_converters: :symbol).each do |row|
+  name = row[:name]
+  organisation = row[:organisation]
+  username = row[:username]
+  password = row[:password]
+
+  memstore.create_user(name: name, username: username, password: password)
+
+  credentials = "#{options.tenant}:#{username}"
+
+  containers["#{organisation}-uploads"] ||= []
+  containers["#{organisation}-uploads"] << [credentials]
+
+  read_acl << credentials if organisation == 'pensionwise'
+end
+
+storage = Fog::Storage.new(provider: 'OpenStack',
+                           openstack_tenant: options.tenant,
+                           openstack_username: options.username,
+                           openstack_api_key: options.password,
+                           openstack_auth_url: options.auth_url)
+
+containers.each do |container, acl|
+  headers = { 'X-Container-Read' => read_acl + acl, 'X-Container-Write' => acl }
+
+  storage.put_container(container, headers: headers, public: false)
+end
